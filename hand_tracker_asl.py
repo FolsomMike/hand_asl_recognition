@@ -1,14 +1,73 @@
+# ----------------------------------------------------------------------------------------------------------------------
+#
+# hand_tracker_asl.py
+# Author: Mike Schoonover
+# Original Author: Cortic Technologies
+# Date: 06/01/22
+#
+# Purpose:
+#
+# This class handles American Sign Language (ASL) recognition using the Luxonis Oak camera systems.
+#
+# Running in Pycharm on Windows:
+#
+# Cloning from Cortic Technologies git repository did not work without fixes. The venv folder was invalid and when
+# a new virtual environment was created, libraries such as numpy could not be imported when the program was run...even
+# though they were installed and could be imported on the PyCharm Python Console.
+#
+# NOTE: The venv folder probably wasn't a PyCharm virtual environment! The repository was meant for Raspberry Pi.
+#       Likewise, there was no PyCharm project files.
+#
+# To get this to work in pyCharm:
+#
+#   Cloned the repository to local.
+#   Deleted the venv folder.
+#   Created a new project selecting the existing folder with options:
+#       New environment using Virtualenv
+#       Location: C:\Users\mike\Documents\22 - Robots\Software Projects\Python\ASL Recognition on Oak-D-Lite\venv
+#   Base interpreter: C:\Users\mike\AppData\Local\Programs\Python\Python38\python.exe
+#
+#   After clicking "Create" button, choose "Create From Existing Sources" to use the files already cloned from the
+#   repository.
+#
+# In PyCharm's Python Console:
+#
+#   pip install --upgrade pip
+#   pip install numpy
+#   pip install opencv-python
+#   pip install opencv-contrib-python==4.1.2.30 (might be unnecessary -- see Note 1 below)
+#   pip install depthai
+#
+# Deleted these two lines to solve "cv2 has no attribute 'freetype'. The lines didn't seem to be necessary. The
+# install of opencv-contrib-python above was suggested on the web, but did not work:
+#
+#       self.ft = cv2.freetype.createFreeType2()
+#       self.ft.loadFontData(fontFileName='HelveticaNeue.ttf', id=0)
+#
+#
+# In PyCharm's Terminal:
+#
+# ./install_dependencies.sh
+#
+# Open Source Policy:
+#
+# This source code is Public Domain and free to any interested party.  Any
+# person, company, or organization may do with it as they please.
+#
+# ----------------------------------------------------------------------------------------------------------------------
+
+from typing import List, Any
+
 import numpy as np
-import copy
-import itertools
 import collections
-from collections import namedtuple
 import mediapipe_utils as mpu
 import depthai as dai
 import cv2
 from pathlib import Path
 import time
 import argparse
+
+import spudLink
 
 characters = ['A', 'B', 'C', 'D', 
               'E', 'F', 'G', 'H', 
@@ -18,29 +77,31 @@ characters = ['A', 'B', 'C', 'D',
               'V', 'W', 'X', 'Y']
 
 FINGER_COLOR = [(128, 128, 128), (80, 190, 168), 
-         (234, 187, 105), (175, 119, 212), 
-         (81, 110, 221)]
+                (234, 187, 105), (175, 119, 212),
+                (81, 110, 221)]
 
 JOINT_COLOR = [(0, 0, 0), (125, 255, 79), 
-            (255, 102, 0), (181, 70, 255), 
-            (13, 63, 255)]
+               (255, 102, 0), (181, 70, 255),
+               (13, 63, 255)]
+
 
 # def to_planar(arr: np.ndarray, shape: tuple) -> list:
 def to_planar(arr: np.ndarray, shape: tuple) -> np.ndarray:
-    resized = cv2.resize(arr, shape, interpolation=cv2.INTER_NEAREST).transpose(2,0,1)
+    resized = cv2.resize(arr, shape, interpolation=cv2.INTER_NEAREST).transpose(2, 0, 1)
     return resized
+
 
 class HandTrackerASL:
     def __init__(self,
-                pd_path="models/palm_detection_6_shaves.blob", 
-                pd_score_thresh=0.65, pd_nms_thresh=0.3,
-                lm_path="models/hand_landmark_6_shaves.blob",
-                lm_score_threshold=0.5,
-                show_landmarks=True,
-                show_hand_box=True,
-                asl_path="models/hand_asl_6_shaves.blob",
-                asl_recognition=True,
-                show_asl=True):
+                 pd_path="models/palm_detection_6_shaves.blob",
+                 pd_score_thresh=0.65, pd_nms_thresh=0.3,
+                 lm_path="models/hand_landmark_6_shaves.blob",
+                 lm_score_threshold=0.5,
+                 show_landmarks=True,
+                 show_hand_box=True,
+                 asl_path="models/hand_asl_6_shaves.blob",
+                 asl_recognition=True,
+                 show_asl=True):
 
         self.pd_path = pd_path
         self.pd_score_thresh = pd_score_thresh
@@ -48,23 +109,23 @@ class HandTrackerASL:
         self.lm_path = lm_path
         self.lm_score_threshold = lm_score_threshold
         self.asl_path = asl_path
-        self.show_landmarks=show_landmarks
+        self.show_landmarks = show_landmarks
         self.show_hand_box = show_hand_box
         self.asl_recognition = asl_recognition
         self.show_asl = show_asl
 
-        anchor_options = mpu.SSDAnchorOptions(num_layers=4, 
-                                min_scale=0.1484375,
-                                max_scale=0.75,
-                                input_size_height=128,
-                                input_size_width=128,
-                                anchor_offset_x=0.5,
-                                anchor_offset_y=0.5,
-                                strides=[8, 16, 16, 16],
-                                aspect_ratios= [1.0],
-                                reduce_boxes_in_lowest_layer=False,
-                                interpolated_scale_aspect_ratio=1.0,
-                                fixed_anchor_size=True)
+        anchor_options = mpu.SSDAnchorOptions(num_layers=4,
+                                              min_scale=0.1484375,
+                                              max_scale=0.75,
+                                              input_size_height=128,
+                                              input_size_width=128,
+                                              anchor_offset_x=0.5,
+                                              anchor_offset_y=0.5,
+                                              strides=[8, 16, 16, 16],
+                                              aspect_ratios=[1.0],
+                                              reduce_boxes_in_lowest_layer=False,
+                                              interpolated_scale_aspect_ratio=1.0,
+                                              fixed_anchor_size=True)
         
         self.anchors = mpu.generate_anchors(anchor_options)
         self.nb_anchors = self.anchors.shape[0]
@@ -88,12 +149,17 @@ class HandTrackerASL:
         self.left_sentence = ""
         self.previous_left_update_time = time.time()
 
+        self.pd_input_length = 128
+        self.lm_input_length = 224
+        self.asl_input_length = 224
+        self.regions: List[Any] = []
+        self.pad_h: int = 0
+        self.pad_w: int = 0
 
     def create_pipeline(self):
         print("Creating pipeline...")
         pipeline = dai.Pipeline()
-        pipeline.setOpenVINOVersion(version = dai.OpenVINO.Version.VERSION_2021_2)
-        self.pd_input_length = 128
+        pipeline.setOpenVINOVersion(version=dai.OpenVINO.Version.VERSION_2021_2)
 
         print("Creating Color Camera...")
         cam = pipeline.createColorCamera()
@@ -117,7 +183,6 @@ class HandTrackerASL:
         print("Creating Hand Landmark Neural Network...")          
         lm_nn = pipeline.createNeuralNetwork()
         lm_nn.setBlobPath(str(Path(self.lm_path).resolve().absolute()))
-        self.lm_input_length = 224
         lm_in = pipeline.createXLinkIn()
         lm_in.setStreamName("lm_in")
         lm_in.out.link(lm_nn.input)
@@ -128,7 +193,6 @@ class HandTrackerASL:
         print("Creating Hand ASL Recognition Neural Network...")          
         asl_nn = pipeline.createNeuralNetwork()
         asl_nn.setBlobPath(str(Path(self.asl_path).resolve().absolute()))
-        self.asl_input_length = 224
         asl_in = pipeline.createXLinkIn()
         asl_in.setStreamName("asl_in")
         asl_in.out.link(asl_nn.input)
@@ -139,10 +203,13 @@ class HandTrackerASL:
         print("Pipeline created.")
         return pipeline
 
-
     def pd_postprocess(self, inference):
-        scores = np.array(inference.getLayerFp16("classificators"), dtype=np.float16) # 896
-        bboxes = np.array(inference.getLayerFp16("regressors"), dtype=np.float16).reshape((self.nb_anchors,18)) # 896x18
+
+        scores = np.array(inference.getLayerFp16("classificators"), dtype=np.float16)  # 896
+
+        bboxes = np.array(inference.getLayerFp16("regressors"), dtype=np.float16).reshape((self.nb_anchors, 18))
+        # 896x18
+
         # Decode bboxes
         self.regions = mpu.decode_bboxes(self.pd_score_thresh, scores, bboxes, self.anchors)
         # Non maximum suppression
@@ -150,7 +217,6 @@ class HandTrackerASL:
         mpu.detections_to_rect(self.regions)
         mpu.rect_transformation(self.regions, self.frame_size, self.frame_size)
 
-    
     def lm_postprocess(self, region, inference):
         region.lm_score = inference.getLayerFp16("Identity_1")[0]    
         region.handedness = inference.getLayerFp16("Identity_2")[0]
@@ -162,35 +228,38 @@ class HandTrackerASL:
             lm.append(lm_raw[3*i:3*(i+1)]/self.lm_input_length)
         region.landmarks = lm
 
-
     def lm_render(self, frame, original_frame, region):
         cropped_frame = None
         hand_bbox = []
         if region.lm_score > self.lm_score_threshold:
             palmar = True
             src = np.array([(0, 0), (1, 0), (1, 1)], dtype=np.float32)
-            dst = np.array([ (x, y) for x,y in region.rect_points[1:]], dtype=np.float32) # region.rect_points[0] is left bottom point !
+
+            # region.rect_points[0] is left bottom point !
+            dst = np.array([(x, y) for x, y in region.rect_points[1:]], dtype=np.float32)
+
             mat = cv2.getAffineTransform(src, dst)
-            lm_xy = np.expand_dims(np.array([(l[0], l[1]) for l in region.landmarks]), axis=0)
+
+            lm_xy = np.expand_dims(np.array([(lm[0], lm[1]) for lm in region.landmarks]), axis=0)
             lm_xy = np.squeeze(cv2.transform(lm_xy, mat)).astype(np.int)
             if self.show_landmarks:
                 list_connections = [[0, 1, 2, 3, 4], 
                                     [5, 6, 7, 8], 
                                     [9, 10, 11, 12],
-                                    [13, 14 , 15, 16],
+                                    [13, 14, 15, 16],
                                     [17, 18, 19, 20]]
                 palm_line = [np.array([lm_xy[point] for point in [0, 5, 9, 13, 17, 0]])]
 
                 # Draw lines connecting the palm
                 if region.handedness > 0.5:
-                    # Simple condition to determine if palm is palmar or dorasl based on the relative 
+                    # Simple condition to determine if palm is palmar or dorsal based on the relative
                     # position of thumb and pinky finger
                     if lm_xy[4][0] > lm_xy[20][0]:
                         cv2.polylines(frame, palm_line, False, (255, 255, 255), 2, cv2.LINE_AA)
                     else:
                         cv2.polylines(frame, palm_line, False, (128, 128, 128), 2, cv2.LINE_AA)
                 else:
-                    # Simple condition to determine if palm is palmar or dorasl based on the relative 
+                    # Simple condition to determine if palm is palmar or dorsal based on the relative
                     # position of thumb and pinky finger
                     if lm_xy[4][0] < lm_xy[20][0]:
                         cv2.polylines(frame, palm_line, False, (255, 255, 255), 2, cv2.LINE_AA)
@@ -232,7 +301,7 @@ class HandTrackerASL:
             max_y = 0
             min_x = frame.shape[1]
             min_y = frame.shape[0]
-            for x,y in lm_xy:
+            for x, y in lm_xy:
                 if x < min_x:
                     min_x = x
                 if x > max_x:
@@ -263,7 +332,6 @@ class HandTrackerASL:
 
                 cv2.rectangle(frame, (draw_min_x, draw_min_y), (draw_max_x, draw_max_y), (36, 152, 0), 2)
 
-                palmar_text = ""
                 if region.handedness > 0.5:
                     palmar_text = "Right: "
                 else:
@@ -272,8 +340,10 @@ class HandTrackerASL:
                     palmar_text = palmar_text + "Palmar"
                 else:
                     palmar_text = palmar_text + "Dorsal"
-                self.ft.putText(img=frame, text=palmar_text , org=(draw_min_x + 1, draw_max_x + 15 + 1), fontHeight=14, color=(0, 0, 0), thickness=-1, line_type=cv2.LINE_AA, bottomLeftOrigin=True)
-                self.ft.putText(img=frame, text=palmar_text , org=(draw_min_x, draw_max_x + 15), fontHeight=14, color=(255, 255, 255), thickness=-1, line_type=cv2.LINE_AA, bottomLeftOrigin=True)
+                self.ft.putText(img=frame, text=palmar_text, org=(draw_min_x + 1, draw_max_x + 15 + 1), fontHeight=14,
+                                color=(0, 0, 0), thickness=-1, line_type=cv2.LINE_AA, bottomLeftOrigin=True)
+                self.ft.putText(img=frame, text=palmar_text, org=(draw_min_x, draw_max_x + 15), fontHeight=14,
+                                color=(255, 255, 255), thickness=-1, line_type=cv2.LINE_AA, bottomLeftOrigin=True)
 
             if self.asl_recognition:
                 # Enlarge the hand bounding box for image cropping 
@@ -301,7 +371,6 @@ class HandTrackerASL:
 
         return cropped_frame, region.handedness, hand_bbox
 
-
     def run(self):
         device = dai.Device(self.create_pipeline())
         device.startPipeline()
@@ -323,7 +392,8 @@ class HandTrackerASL:
             self.pad_h = int((self.frame_size - h)/2)
             self.pad_w = int((self.frame_size - w)/2)
 
-            video_frame = cv2.copyMakeBorder(video_frame, self.pad_h, self.pad_h, self.pad_w, self.pad_w, cv2.BORDER_CONSTANT)
+            video_frame = cv2.copyMakeBorder(video_frame, self.pad_h, self.pad_h, self.pad_w, self.pad_w,
+                                             cv2.BORDER_CONSTANT)
             
             frame_nn = dai.ImgFrame()
             frame_nn.setWidth(self.pd_input_length)
@@ -338,21 +408,22 @@ class HandTrackerASL:
             self.pd_postprocess(inference)
 
             # Send data for hand landmarks
-            for i,r in enumerate(self.regions):
+            for i, r in enumerate(self.regions):
                 img_hand = mpu.warp_rect_img(r.rect_points, video_frame, self.lm_input_length, self.lm_input_length)
                 nn_data = dai.NNData()   
                 nn_data.setLayer("input_1", to_planar(img_hand, (self.lm_input_length, self.lm_input_length)))
                 q_lm_in.send(nn_data)
 
             # Retrieve hand landmarks
-            for i,r in enumerate(self.regions):
+            for i, r in enumerate(self.regions):
                 inference = q_lm_out.get()
                 self.lm_postprocess(r, inference)
                 hand_frame, handedness, hand_bbox = self.lm_render(video_frame, annotated_frame, r)
                 # ASL recognition
                 if hand_frame is not None and self.asl_recognition:
-                    hand_frame = cv2.resize(hand_frame, (self.asl_input_length, self.asl_input_length), interpolation=cv2.INTER_NEAREST)
-                    hand_frame = hand_frame.transpose(2,0,1)
+                    hand_frame = cv2.resize(hand_frame, (self.asl_input_length, self.asl_input_length),
+                                            interpolation=cv2.INTER_NEAREST)
+                    hand_frame = hand_frame.transpose(2, 0, 1)
                     nn_data = dai.NNData()
                     nn_data.setLayer("input", hand_frame)
                     q_asl_in.send(nn_data)
@@ -361,7 +432,6 @@ class HandTrackerASL:
                     # Recognized ASL character is associated with a probability
                     asl_char = [characters[asl_idx], round(asl_result[asl_idx] * 100, 1)]
                     selected_char = asl_char
-                    current_char_queue = None
                     if handedness > 0.5:
                         current_char_queue = self.right_char_queue
                     else:
@@ -373,12 +443,12 @@ class HandTrackerASL:
                         selected_char = current_char_queue[0]
                     else:
                         char_candidate = {}
-                        for i in range(5):
-                            if current_char_queue[i][0] not in char_candidate:
-                                char_candidate[current_char_queue[i][0]] = [1, current_char_queue[i][1]]
+                        for j in range(5):
+                            if current_char_queue[j][0] not in char_candidate:
+                                char_candidate[current_char_queue[j][0]] = [1, current_char_queue[i][1]]
                             else:
-                                char_candidate[current_char_queue[i][0]][0] += 1
-                                char_candidate[current_char_queue[i][0]][1] += current_char_queue[i][1]
+                                char_candidate[current_char_queue[j][0]][0] += 1
+                                char_candidate[current_char_queue[j][0]][1] += current_char_queue[i][1]
                         most_voted_char = ""
                         max_votes = 0
                         most_voted_char_prob = 0
@@ -392,8 +462,11 @@ class HandTrackerASL:
                     if self.show_asl:
                         gesture_string = "Letter: " + selected_char[0] + ", " + str(selected_char[1]) + "%"
                         textSize = self.ft.getTextSize(gesture_string, fontHeight=14, thickness=-1)[0]
-                        cv2.rectangle(video_frame, (hand_bbox[0] - 5, hand_bbox[1]), (hand_bbox[0] + textSize[0] + 5, hand_bbox[1] - 18), (36, 152, 0), -1)
-                        self.ft.putText(img=video_frame, text=gesture_string , org=(hand_bbox[0], hand_bbox[1] - 5), fontHeight=14, color=(255, 255, 255), thickness=-1, line_type=cv2.LINE_AA, bottomLeftOrigin=True)
+                        cv2.rectangle(video_frame, (hand_bbox[0] - 5, hand_bbox[1]), (hand_bbox[0] + textSize[0] + 5,
+                                      hand_bbox[1] - 18), (36, 152, 0), -1)
+                        self.ft.putText(img=video_frame, text=gesture_string, org=(hand_bbox[0], hand_bbox[1] - 5),
+                                        fontHeight=14, color=(255, 255, 255), thickness=-1, line_type=cv2.LINE_AA,
+                                        bottomLeftOrigin=True)
 
             video_frame = video_frame[self.pad_h:self.pad_h+h, self.pad_w:self.pad_w+w]
             cv2.imshow("hand tracker", video_frame)
