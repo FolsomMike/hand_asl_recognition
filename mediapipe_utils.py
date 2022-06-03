@@ -98,7 +98,7 @@ def generate_anchors(options):
     return np.array(anchors)
 
 
-def decode_bboxes(score_thresh, scores, bboxes, anchors):
+def decode_bboxes(score_thresh, rawScores, bboxes, anchors):
     """
     wi, hi : NN input shape
     mediapipe/calculators/tflite/tflite_tensors_to_detections_calculator.cc
@@ -138,7 +138,15 @@ def decode_bboxes(score_thresh, scores, bboxes, anchors):
     bboxes: shape = [ number of anchors x 18], 18 = 4 (bounding box : (cx,cy,w,h) + 14 (7 palm keypoints)
     """
     regions = []
-    scores = 1 / (1 + np.exp(-scores))
+
+    # limit to -11.0 to avoid overflow of the float16 array when using exp
+    rawScores = rawScores.clip(-11.0, None)
+
+    # exp calculates e^x for every x value in an array and returns the values as an array
+    # e = Euler's number 2.7182818284590452353602874713527
+
+    scores = 1 / (1 + np.exp(-rawScores))
+
     detection_mask = scores > score_thresh
     det_scores = scores[detection_mask]
     if det_scores.size == 0: return regions
